@@ -29,6 +29,7 @@ import com.android.bundle.Devices.DeviceSpec;
 import com.android.bundle.Targeting.ApkTargeting;
 import com.android.tools.build.bundletool.device.ApkMatcher;
 import com.android.tools.build.bundletool.mergers.D8DexMerger;
+import com.android.tools.build.bundletool.mergers.DxDexMerger;
 import com.android.tools.build.bundletool.mergers.ModuleSplitsToShardMerger;
 import com.android.tools.build.bundletool.mergers.SameTargetingMerger;
 import com.android.tools.build.bundletool.model.BundleMetadata;
@@ -72,7 +73,8 @@ public class BundleSharder {
       Version bundleVersion,
       BundleSharderConfiguration bundleSharderConfiguration) {
     this.bundleVersion = bundleVersion;
-    this.merger = new ModuleSplitsToShardMerger(new D8DexMerger(), globalTempDir);
+//    this.merger = new ModuleSplitsToShardMerger(new D8DexMerger(), globalTempDir);
+    this.merger = new ModuleSplitsToShardMerger(new DxDexMerger(), globalTempDir);
     this.bundleSharderConfiguration = bundleSharderConfiguration;
   }
 

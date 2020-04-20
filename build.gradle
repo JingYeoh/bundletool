@@ -10,6 +10,7 @@ buildscript {
     dependencies {
         classpath "com.google.protobuf:protobuf-gradle-plugin:0.8.8"
         classpath "com.github.jengelman.gradle.plugins:shadow:4.0.4"
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.3.0"
     }
 }
 
@@ -17,6 +18,7 @@ apply plugin: "com.github.johnrengelman.shadow"
 apply plugin: "com.google.protobuf"
 apply plugin: "java"
 apply plugin: "maven"
+apply plugin: 'kotlin'
 
 repositories {
     mavenLocal()
@@ -33,8 +35,11 @@ configurations {
 // The repackaging rules are defined in the "shadowJar" task below.
 dependencies {
     compile "com.android.tools:r8:1.5.68"
+//    compile "com.google.android.tools:dx:1.7"
+    compile "com.rover12421.android:dx:1.16"
     compile "com.android.tools.build:apkzlib:3.4.0-beta01"
     compile "com.android.tools.ddms:ddmlib:26.2.0"
+    compile "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.3.4"
 
     shadow "com.android.tools.build:aapt2-proto:0.4.0"
     shadow "com.google.auto.value:auto-value-annotations:1.6.2"
@@ -64,6 +69,8 @@ dependencies {
     testCompile "org.junit.vintage:junit-vintage-engine:5.2.0"
     testRuntime "org.junit.jupiter:junit-jupiter-engine:5.2.0"
     testCompile "org.junit.platform:junit-platform-runner:1.2.0"
+    testCompile "com.rover12421.android:dx:1.16"
+    testCompile "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.3.4"
 }
 
 def osName = System.getProperty("os.name").toLowerCase()
@@ -160,8 +167,8 @@ task executableJar(type: ShadowJar) {
     from({ zipTree(project.configurations.compileMacOs.singleFile) }) { into 'macos/' }
     from({ zipTree(project.configurations.compileLinux.singleFile) }) { into 'linux/' }
     configurations = [
-        project.configurations.runtime,
-        project.configurations.shadow
+            project.configurations.runtime,
+            project.configurations.shadow
     ]
     manifest {
         attributes 'Main-Class': 'com.android.tools.build.bundletool.BundleToolMain'

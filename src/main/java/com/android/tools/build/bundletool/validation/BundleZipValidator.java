@@ -26,7 +26,7 @@ public class BundleZipValidator extends SubValidator {
   @Override
   public void validateBundleZipEntry(ZipFile bundleFile, ZipEntry zipEntry) {
     if (zipEntry.isDirectory()) {
-      throw new DirectoryInBundleException(zipEntry);
+//      throw new DirectoryInBundleException(zipEntry);
     }
   }
 }

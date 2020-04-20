@@ -15,18 +15,22 @@
  */
 package com.android.tools.build.bundletool.model.utils.xmlproto;
 
-import static com.android.tools.build.bundletool.model.AndroidManifest.NO_NAMESPACE_URI;
-import static com.google.common.collect.MoreCollectors.toOptional;
-import static java.util.stream.Collectors.toList;
-
 import com.android.aapt.Resources.XmlAttributeOrBuilder;
 import com.android.aapt.Resources.XmlElementOrBuilder;
 import com.android.aapt.Resources.XmlNodeOrBuilder;
+import com.google.common.base.Function;
 import com.google.common.base.Predicate;
 import com.google.common.collect.Iterables;
+
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Stream;
+
+import static com.android.tools.build.bundletool.model.AndroidManifest.NO_NAMESPACE_URI;
+import static com.google.common.collect.MoreCollectors.toOptional;
+import static java.util.stream.Collectors.toList;
 
 /**
  * Internal interface ensuring that {@link XmlProtoElement} and {@link XmlProtoElementBuilder} have
@@ -68,7 +72,12 @@ abstract class XmlProtoElementOrBuilder<
   }
 
   public final Stream<NodeWrapperT> getChildrenText() {
-    return getChildren().filter(NodeWrapperT::isText);
+    return getChildren().filter(new Predicate<NodeWrapperT>() {
+      @Override
+      public boolean apply(@Nullable NodeWrapperT input) {
+        return input.isText();
+      }
+    });
   }
 
   public final Optional<NodeWrapperT> getChildText() {
@@ -91,7 +100,13 @@ abstract class XmlProtoElementOrBuilder<
 
   @Deprecated // Don't ignore the namespace!
   public final Optional<AttributeWrapperT> getAttributeIgnoringNamespace(String name) {
-    return getAttributes().filter(attr -> attr.getName().equals(name)).findFirst();
+    return getAttributes().filter(new Predicate<AttributeWrapperT>() {
+      @Override
+      public boolean apply(@Nullable AttributeWrapperT input) {
+        return input.getName().equals(name);
+      }
+    }).findFirst();
+//    return getAttributes().filter(attr -> attr.getName().equals(name)).findFirst();
   }
 
   public final Optional<AttributeWrapperT> getAndroidAttribute(int resourceId) {
@@ -99,7 +114,19 @@ abstract class XmlProtoElementOrBuilder<
   }
 
   public final Stream<ElementWrapperT> getChildrenElements() {
-    return getChildren().filter(NodeWrapperT::isElement).map(NodeWrapperT::getElement);
+    return getChildren().filter(new Predicate<NodeWrapperT>() {
+      @Override
+      public boolean apply(@Nullable NodeWrapperT input) {
+        return input.isElement();
+      }
+    }).map(new Function<NodeWrapperT, ElementWrapperT>() {
+      @Nullable
+      @Override
+      public ElementWrapperT apply(@Nullable NodeWrapperT input) {
+        return input.getElement();
+      }
+    });
+//    return getChildren().filter(NodeWrapperT::isElement).map(NodeWrapperT::getElement);
   }
 
   /** Finds XML elements among the direct children with the given name and empty namespace URI. */
