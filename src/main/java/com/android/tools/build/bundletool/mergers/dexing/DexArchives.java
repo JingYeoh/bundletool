@@ -45,7 +45,7 @@ public final class DexArchives {
    */
   @NonNull
   public static DexArchive fromInput(@NonNull Path path) throws IOException {
-    if (ClassFileInputs.dexMatcher.matches(path)) {
+    if (ClassFileInputs.jarMatcher.matches(path)) {
       return new NonIncrementalJarDexArchive(path);
     } else {
       return new DirDexArchive(path);

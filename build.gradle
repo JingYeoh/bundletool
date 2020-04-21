@@ -34,7 +34,8 @@ configurations {
 
 // The repackaging rules are defined in the "shadowJar" task below.
 dependencies {
-    compile "com.android.tools:r8:1.5.68"
+    compile fileTree(dir: 'libs', include: ['*.jar'])
+//    compile "com.android.tools:r8:1.5.68"
 //    compile "com.google.android.tools:dx:1.7"
     compile "com.rover12421.android:dx:1.16"
     compile "com.android.tools.build:apkzlib:3.4.0-beta01"
@@ -53,6 +54,7 @@ dependencies {
     compileMacOs "com.android.tools.build:aapt2:3.5.0-alpha03-5252756:osx"
     compileLinux "com.android.tools.build:aapt2:3.5.0-alpha03-5252756:linux"
 
+    testCompile fileTree(dir: 'libs', include: ['*.jar'])
     testCompile "com.android.tools.build:aapt2-proto:0.4.0"
     testCompile "com.google.auto.value:auto-value-annotations:1.6.2"
     testAnnotationProcessor "com.google.auto.value:auto-value:1.6.2"

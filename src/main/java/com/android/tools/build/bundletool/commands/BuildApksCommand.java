@@ -16,14 +16,6 @@
 
 package com.android.tools.build.bundletool.commands;
 
-import static com.android.tools.build.bundletool.commands.BuildApksCommand.ApkBuildMode.DEFAULT;
-import static com.android.tools.build.bundletool.commands.BuildApksCommand.ApkBuildMode.SYSTEM;
-import static com.android.tools.build.bundletool.commands.BuildApksCommand.ApkBuildMode.SYSTEM_COMPRESSED;
-import static com.android.tools.build.bundletool.commands.BuildApksCommand.ApkBuildMode.UNIVERSAL;
-import static com.android.tools.build.bundletool.model.utils.SdkToolsLocator.ANDROID_HOME_VARIABLE;
-import static com.android.tools.build.bundletool.model.utils.SdkToolsLocator.SYSTEM_PATH_VARIABLE;
-import static com.google.common.base.Preconditions.checkArgument;
-
 import com.android.bundle.Devices.DeviceSpec;
 import com.android.tools.build.bundletool.commands.CommandHelp.CommandDescription;
 import com.android.tools.build.bundletool.commands.CommandHelp.FlagDescription;
@@ -32,20 +24,18 @@ import com.android.tools.build.bundletool.device.DeviceSpecParser;
 import com.android.tools.build.bundletool.flags.Flag;
 import com.android.tools.build.bundletool.flags.ParsedFlags;
 import com.android.tools.build.bundletool.io.TempDirectory;
+import com.android.tools.build.bundletool.mergers.D8DexMerger;
 import com.android.tools.build.bundletool.model.Aapt2Command;
 import com.android.tools.build.bundletool.model.ApkListener;
 import com.android.tools.build.bundletool.model.ApkModifier;
 import com.android.tools.build.bundletool.model.OptimizationDimension;
 import com.android.tools.build.bundletool.model.Password;
 import com.android.tools.build.bundletool.model.SigningConfiguration;
-import com.android.tools.build.bundletool.model.SourceStamp;
 import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
 import com.android.tools.build.bundletool.model.exceptions.ValidationException;
 import com.android.tools.build.bundletool.model.utils.DefaultSystemEnvironmentProvider;
 import com.android.tools.build.bundletool.model.utils.SdkToolsLocator;
 import com.android.tools.build.bundletool.model.utils.SystemEnvironmentProvider;
-import com.android.tools.build.bundletool.splitters.DexCompressionSplitter;
-import com.android.tools.build.bundletool.splitters.NativeLibrariesCompressionSplitter;
 import com.android.tools.build.bundletool.validation.SubValidator;
 import com.google.auto.value.AutoValue;
 import com.google.common.base.Ascii;
@@ -55,6 +45,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.io.MoreFiles;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
+
 import java.io.PrintStream;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -62,43 +53,20 @@ import java.util.Optional;
 import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
+import static com.android.tools.build.bundletool.commands.BuildApksCommand.ApkBuildMode.DEFAULT;
+import static com.android.tools.build.bundletool.commands.BuildApksCommand.ApkBuildMode.SYSTEM;
+import static com.android.tools.build.bundletool.commands.BuildApksCommand.ApkBuildMode.SYSTEM_COMPRESSED;
+import static com.android.tools.build.bundletool.commands.BuildApksCommand.ApkBuildMode.UNIVERSAL;
+import static com.android.tools.build.bundletool.model.utils.SdkToolsLocator.ANDROID_HOME_VARIABLE;
+import static com.android.tools.build.bundletool.model.utils.SdkToolsLocator.SYSTEM_PATH_VARIABLE;
+import static com.google.common.base.Preconditions.checkArgument;
+
 /** Command to generate APKs from an Android App Bundle. */
 @AutoValue
 public abstract class BuildApksCommand {
 
-  private static final int DEFAULT_THREAD_POOL_SIZE = 4;
-
   public static final String COMMAND_NAME = "build-apks";
-
-  /** Modes to run {@link BuildApksCommand} against to generate APKs. */
-  public enum ApkBuildMode {
-    /** DEFAULT mode generates split, standalone and instant APKs. */
-    DEFAULT,
-    /** UNIVERSAL mode generates universal APK. */
-    UNIVERSAL,
-    /** SYSTEM mode generates APKs for the system image. */
-    SYSTEM,
-    /**
-     * SYSTEM_COMPRESSED mode generates compressed APK and an additional uncompressed stub APK
-     * (containing only android manifest) for the system image.
-     */
-    SYSTEM_COMPRESSED,
-    /** PERSISTENT mode only generates non-instant APKs (i.e. splits and standalone APKs). */
-    PERSISTENT,
-    /**
-     * INSTANT mode only generates instant APKs, assuming at least one module is instant-enabled.
-     */
-    INSTANT;
-
-    public final String getLowerCaseName() {
-      return Ascii.toLowerCase(name());
-    }
-
-    public final boolean isAnySystemMode() {
-      return equals(SYSTEM) || equals(SYSTEM_COMPRESSED);
-    }
-  }
-
+  private static final int DEFAULT_THREAD_POOL_SIZE = 4;
   private static final Flag<Path> BUNDLE_LOCATION_FLAG = Flag.path("bundle");
   private static final Flag<Path> OUTPUT_FILE_FLAG = Flag.path("output");
   private static final Flag<Boolean> OVERWRITE_OUTPUT_FLAG = Flag.booleanFlag("overwrite");
@@ -109,78 +77,21 @@ public abstract class BuildApksCommand {
   private static final Flag<ApkBuildMode> BUILD_MODE_FLAG =
       Flag.enumFlag("mode", ApkBuildMode.class);
   private static final Flag<Boolean> LOCAL_TESTING_MODE_FLAG = Flag.booleanFlag("local-testing");
-
   private static final Flag<Path> ADB_PATH_FLAG = Flag.path("adb");
   private static final Flag<Boolean> CONNECTED_DEVICE_FLAG = Flag.booleanFlag("connected-device");
   private static final Flag<String> DEVICE_ID_FLAG = Flag.string("device-id");
   private static final String ANDROID_SERIAL_VARIABLE = "ANDROID_SERIAL";
   private static final Flag<ImmutableSet<String>> MODULES_FLAG = Flag.stringSet("modules");
-
   private static final Flag<Path> DEVICE_SPEC_FLAG = Flag.path("device-spec");
-
   // Signing-related flags: should match flags from apksig library.
   private static final Flag<Path> KEYSTORE_FLAG = Flag.path("ks");
   private static final Flag<String> KEY_ALIAS_FLAG = Flag.string("ks-key-alias");
   private static final Flag<Password> KEYSTORE_PASSWORD_FLAG = Flag.password("ks-pass");
   private static final Flag<Password> KEY_PASSWORD_FLAG = Flag.password("key-pass");
-
-
   private static final String APK_SET_ARCHIVE_EXTENSION = "apks";
-
+  private static final Flag<String> DEX_MAX_IDS = Flag.string("dex-max-ids");
   private static final SystemEnvironmentProvider DEFAULT_PROVIDER =
       new DefaultSystemEnvironmentProvider();
-
-  public abstract Path getBundlePath();
-
-  public abstract Path getOutputFile();
-
-  public abstract boolean getOverwriteOutput();
-
-  public abstract ImmutableSet<OptimizationDimension> getOptimizationDimensions();
-
-  public abstract ImmutableSet<String> getModules();
-
-  public abstract Optional<DeviceSpec> getDeviceSpec();
-
-  public abstract boolean getGenerateOnlyForConnectedDevice();
-
-  public abstract Optional<String> getDeviceId();
-
-  /** Required when getGenerateOnlyForConnectedDevice is true. */
-  abstract Optional<AdbServer> getAdbServer();
-
-  /** Required when getGenerateOnlyForConnectedDevice is true. */
-  public abstract Optional<Path> getAdbPath();
-
-  public abstract ApkBuildMode getApkBuildMode();
-
-  public abstract boolean getLocalTestingMode();
-
-  public abstract Optional<Aapt2Command> getAapt2Command();
-
-  public abstract Optional<SigningConfiguration> getSigningConfiguration();
-
-  ListeningExecutorService getExecutorService() {
-    return getExecutorServiceInternal();
-  }
-
-  abstract ListeningExecutorService getExecutorServiceInternal();
-
-  abstract boolean isExecutorServiceCreatedByBundleTool();
-
-  public abstract boolean getCreateApkSetArchive();
-
-
-  public abstract Optional<ApkListener> getApkListener();
-
-  public abstract Optional<ApkModifier> getApkModifier();
-
-  public abstract ImmutableList<SubValidator> getExtraValidators();
-
-  public abstract Optional<Integer> getFirstVariantNumber();
-
-  public abstract Optional<PrintStream> getOutputPrintStream();
-
 
   public static Builder builder() {
     return new AutoValue_BuildApksCommand.Builder()
@@ -192,241 +103,6 @@ public abstract class BuildApksCommand {
         .setOptimizationDimensions(ImmutableSet.of())
         .setModules(ImmutableSet.of())
         .setExtraValidators(ImmutableList.of());
-  }
-
-  /** Builder for the {@link BuildApksCommand}. */
-  @AutoValue.Builder
-  public abstract static class Builder {
-    /** Sets the path to the bundle. Must have the extension ".aab". */
-    public abstract Builder setBundlePath(Path bundlePath);
-
-    /** Sets the path to where the APK Set must be generated. Must have the extension ".apks". */
-    public abstract Builder setOutputFile(Path outputFile);
-
-    /**
-     * Sets whether to overwrite the contents of the output file.
-     *
-     * <p>The default is {@code false}. If set to {@code false} and the output file is present,
-     * exception is thrown.
-     */
-    public abstract Builder setOverwriteOutput(boolean overwriteOutput);
-
-    /** List of config dimensions to split the APKs by. */
-    @Deprecated // Use setBundleConfig() instead.
-    public abstract Builder setOptimizationDimensions(
-        ImmutableSet<OptimizationDimension> optimizationDimensions);
-
-    /**
-     * Sets against which mode APK should be generated.
-     *
-     * <p>By default we generate split, standalone ans instant APKs.
-     */
-    public abstract Builder setApkBuildMode(ApkBuildMode mode);
-
-    /**
-     * Sets whether the APKs should be built in local testing mode.
-     *
-     * <p>The default is {@code false}.
-     */
-    public abstract Builder setLocalTestingMode(boolean enableLocalTesting);
-
-    /**
-     * Sets if the generated APK Set will contain APKs compatible only with the connected device.
-     */
-    public abstract Builder setGenerateOnlyForConnectedDevice(boolean onlyForConnectedDevice);
-
-    public abstract Builder setModules(ImmutableSet<String> modules);
-
-    /** Sets the {@link DeviceSpec} for which the only the matching APKs will be generated. */
-    public abstract Builder setDeviceSpec(DeviceSpec deviceSpec);
-
-    /** Sets the {@link DeviceSpec} for which the only the matching APKs will be generated. */
-    public Builder setDeviceSpec(Path deviceSpecFile) {
-      // Parse as partial and fully validate later.
-      return setDeviceSpec(DeviceSpecParser.parsePartialDeviceSpec(deviceSpecFile));
-    }
-
-    /**
-     * Sets the device serial number. Required if more than one device including emulators is
-     * connected.
-     */
-    public abstract Builder setDeviceId(String deviceId);
-
-    /** Path to the ADB binary. Required if ANDROID_HOME environment variable is not set. */
-    public abstract Builder setAdbPath(Path adbPath);
-
-    /** The caller is responsible for the lifecycle of the {@link AdbServer}. */
-    public abstract Builder setAdbServer(AdbServer adbServer);
-
-    /** Provides a wrapper around the execution of the aapt2 command. */
-    public abstract Builder setAapt2Command(Aapt2Command aapt2Command);
-
-    /**
-     * Sets the signing configuration for the generated APKs.
-     *
-     * <p>Optional. If not set, the generated APKs will not be signed.
-     */
-    public abstract Builder setSigningConfiguration(SigningConfiguration signingConfiguration);
-
-    /**
-     * Allows to set an executor service for parallelization.
-     *
-     * <p>Optional. The caller is responsible for providing a service that accepts new tasks, and
-     * for shutting it down afterwards.
-     */
-    public Builder setExecutorService(ListeningExecutorService executorService) {
-      setExecutorServiceInternal(executorService);
-      setExecutorServiceCreatedByBundleTool(false);
-      return this;
-    }
-
-    abstract Builder setExecutorServiceInternal(ListeningExecutorService executorService);
-
-    abstract Optional<ListeningExecutorService> getExecutorServiceInternal();
-
-    /**
-     * Sets whether the ExecutorService has been created by bundletool, otherwise provided by the
-     * client.
-     *
-     * <p>If true, the ExecutorService is shut down at the end of execution of this command.
-     */
-    abstract Builder setExecutorServiceCreatedByBundleTool(boolean value);
-
-    /**
-     * If false will extract the APK set to the output directory without creating the final archive.
-     * Important: if this mode is used, the caller should still provide a "apks file" as the output
-     * file parameter. This is because there is a lots of validation here that assumes that. The
-     * command will return the directory where the APK files were copied to.
-     */
-    public abstract Builder setCreateApkSetArchive(boolean value);
-
-
-    /**
-     * Provides an {@link ApkListener} that will be notified at defined stages of APK creation.
-     *
-     * <p>The {@link ApkListener} must be thread-safe.
-     */
-    public abstract Builder setApkListener(ApkListener apkListener);
-
-    /**
-     * Provides an {@link ApkModifier} that will be invoked just before the APKs are finalized,
-     * serialized on disk and signed.
-     *
-     * <p>The {@link ApkModifier} must be thread-safe as it may in the future be invoked
-     * concurrently for the different APKs.
-     */
-    public abstract Builder setApkModifier(ApkModifier apkModifier);
-
-    /** Provides additional {@link SubValidator}s that will be invoked during validation. */
-    public abstract Builder setExtraValidators(ImmutableList<SubValidator> extraValidators);
-
-    /**
-     * Provides the lowest variant number to use.
-     *
-     * <p>By default, variants are numbered from 0 to {@code variantNum - 1}. By setting a value
-     * here, the variants will be numbered from {@code lowestVariantNumber} and up.
-     */
-    public abstract Builder setFirstVariantNumber(int firstVariantNumber);
-
-    /** For command line, sets the {@link PrintStream} to use for outputting the warnings. */
-    public abstract Builder setOutputPrintStream(PrintStream outputPrintStream);
-
-
-    abstract BuildApksCommand autoBuild();
-
-    public BuildApksCommand build() {
-      if (!getExecutorServiceInternal().isPresent()) {
-        setExecutorServiceInternal(createInternalExecutorService(DEFAULT_THREAD_POOL_SIZE));
-        setExecutorServiceCreatedByBundleTool(true);
-      }
-
-      BuildApksCommand command = autoBuild();
-      if (!command.getOptimizationDimensions().isEmpty()
-          && !command.getApkBuildMode().equals(DEFAULT)) {
-        throw new ValidationException(
-            String.format(
-                "Optimization dimension can be only set when running with '%s' mode flag.",
-                DEFAULT.getLowerCaseName()));
-      }
-
-      if (command.getGenerateOnlyForConnectedDevice()
-          && !command.getApkBuildMode().equals(DEFAULT)) {
-        throw new ValidationException(
-            String.format(
-                "Optimizing for connected device only possible when running with '%s' mode flag.",
-                DEFAULT.getLowerCaseName()));
-      }
-
-      if (command.getDeviceSpec().isPresent()) {
-        boolean supportsPartialDeviceSpecs = command.getApkBuildMode().isAnySystemMode();
-        DeviceSpecParser.validateDeviceSpec(
-            command.getDeviceSpec().get(), /* canSkipFields= */ supportsPartialDeviceSpecs);
-
-        switch (command.getApkBuildMode()) {
-          case UNIVERSAL:
-            throw new ValidationException(
-                String.format(
-                    "Optimizing for device spec not possible when running with '%s' mode flag.",
-                    UNIVERSAL.getLowerCaseName()));
-          case SYSTEM:
-          case SYSTEM_COMPRESSED:
-            DeviceSpec deviceSpec = command.getDeviceSpec().get();
-            if (deviceSpec.getScreenDensity() == 0 || deviceSpec.getSupportedAbisList().isEmpty()) {
-              throw new ValidationException(
-                  String.format(
-                      "Device spec must have screen density and ABIs set when running with "
-                          + "'%s' or '%s' mode flag. ",
-                      SYSTEM.getLowerCaseName(), SYSTEM_COMPRESSED.getLowerCaseName()));
-            }
-            break;
-          case DEFAULT:
-          case INSTANT:
-          case PERSISTENT:
-        }
-      } else {
-        if (command.getApkBuildMode().isAnySystemMode()) {
-          throw ValidationException.builder()
-              .withMessage(
-                  "Device spec must always be set when running with '%s' or '%s' mode flag.",
-                  SYSTEM.getLowerCaseName(), SYSTEM_COMPRESSED.getLowerCaseName())
-              .build();
-        }
-      }
-
-      if (command.getGenerateOnlyForConnectedDevice() && command.getDeviceSpec().isPresent()) {
-        throw new ValidationException(
-            "Cannot optimize for the device spec and connected device at the same time.");
-      }
-
-      if (command.getDeviceId().isPresent() && !command.getGenerateOnlyForConnectedDevice()) {
-        throw new ValidationException(
-            "Setting --device-id requires using the --connected-device flag.");
-      }
-
-      if (command.getCreateApkSetArchive()) {
-        if (!APK_SET_ARCHIVE_EXTENSION.equals(
-            MoreFiles.getFileExtension(command.getOutputFile()))) {
-          throw ValidationException.builder()
-              .withMessage(
-                  "Flag --output should be the path where to generate the APK Set. "
-                      + "Its extension must be '.apks'.")
-              .build();
-        }
-      }
-
-      if (!command.getModules().isEmpty()
-          && !command.getApkBuildMode().isAnySystemMode()
-          && !command.getApkBuildMode().equals(UNIVERSAL)) {
-        throw ValidationException.builder()
-            .withMessage(
-                "Modules can be only set when running with '%s', '%s' or '%s' mode flag.",
-                UNIVERSAL.getLowerCaseName(),
-                SYSTEM.getLowerCaseName(),
-                SYSTEM_COMPRESSED.getLowerCaseName())
-            .build();
-      }
-      return command;
-    }
   }
 
   public static BuildApksCommand fromFlags(ParsedFlags flags, AdbServer adbServer) {
@@ -468,6 +144,10 @@ public abstract class BuildApksCommand {
     Optional<String> keyAlias = KEY_ALIAS_FLAG.getValue(flags);
     Optional<Password> keystorePassword = KEYSTORE_PASSWORD_FLAG.getValue(flags);
     Optional<Password> keyPassword = KEY_PASSWORD_FLAG.getValue(flags);
+
+    // Main dex list
+    Optional<String> mainDexListMaxIds = DEX_MAX_IDS.getValue(flags);
+    mainDexListMaxIds.ifPresent(s -> D8DexMerger.maxIds = Integer.parseInt(s));
 
     if (keystorePath.isPresent() && keyAlias.isPresent()) {
       buildApksCommand.setSigningConfiguration(
@@ -540,14 +220,6 @@ public abstract class BuildApksCommand {
     flags.checkNoUnknownFlags();
 
     return buildApksCommand.build();
-  }
-
-  public Path execute() {
-    try (TempDirectory tempDir = new TempDirectory()) {
-      Aapt2Command aapt2 =
-          getAapt2Command().orElseGet(() -> extractAapt2FromJar(tempDir.getPath()));
-      return new BuildApksManager(this, aapt2, tempDir.getPath()).execute();
-    }
   }
 
   private static Aapt2Command extractAapt2FromJar(Path tempDir) {
@@ -760,6 +432,14 @@ public abstract class BuildApksCommand {
                         + " accessed by the Play Core API.",
                     InstallApksCommand.COMMAND_NAME)
                 .build())
+        .addFlag(
+            FlagDescription.builder()
+                .setFlagName(DEX_MAX_IDS.getName())
+                .setOptional(true)
+                .setDescription(
+                    "Main dex fields and methods max size",
+                    InstallApksCommand.COMMAND_NAME)
+                .build())
         .build();
   }
 
@@ -768,5 +448,327 @@ public abstract class BuildApksCommand {
         .map(Enum::name)
         .map(String::toLowerCase)
         .collect(Collectors.joining("|"));
+  }
+
+  public abstract Path getBundlePath();
+
+  public abstract Path getOutputFile();
+
+  public abstract boolean getOverwriteOutput();
+
+  public abstract ImmutableSet<OptimizationDimension> getOptimizationDimensions();
+
+  public abstract ImmutableSet<String> getModules();
+
+  public abstract Optional<DeviceSpec> getDeviceSpec();
+
+  public abstract boolean getGenerateOnlyForConnectedDevice();
+
+  public abstract Optional<String> getDeviceId();
+
+  /** Required when getGenerateOnlyForConnectedDevice is true. */
+  abstract Optional<AdbServer> getAdbServer();
+
+  /** Required when getGenerateOnlyForConnectedDevice is true. */
+  public abstract Optional<Path> getAdbPath();
+
+  public abstract ApkBuildMode getApkBuildMode();
+
+  public abstract boolean getLocalTestingMode();
+
+  public abstract Optional<Aapt2Command> getAapt2Command();
+
+  public abstract Optional<SigningConfiguration> getSigningConfiguration();
+
+  ListeningExecutorService getExecutorService() {
+    return getExecutorServiceInternal();
+  }
+
+  abstract ListeningExecutorService getExecutorServiceInternal();
+
+  abstract boolean isExecutorServiceCreatedByBundleTool();
+
+  public abstract boolean getCreateApkSetArchive();
+
+  public abstract Optional<ApkListener> getApkListener();
+
+  public abstract Optional<ApkModifier> getApkModifier();
+
+  public abstract ImmutableList<SubValidator> getExtraValidators();
+
+  public abstract Optional<Integer> getFirstVariantNumber();
+
+  public abstract Optional<PrintStream> getOutputPrintStream();
+
+  public Path execute() {
+    try (TempDirectory tempDir = new TempDirectory()) {
+      Aapt2Command aapt2 =
+          getAapt2Command().orElseGet(() -> extractAapt2FromJar(tempDir.getPath()));
+      return new BuildApksManager(this, aapt2, tempDir.getPath()).execute();
+    }
+  }
+
+  /** Modes to run {@link BuildApksCommand} against to generate APKs. */
+  public enum ApkBuildMode {
+    /** DEFAULT mode generates split, standalone and instant APKs. */
+    DEFAULT,
+    /** UNIVERSAL mode generates universal APK. */
+    UNIVERSAL,
+    /** SYSTEM mode generates APKs for the system image. */
+    SYSTEM,
+    /**
+     * SYSTEM_COMPRESSED mode generates compressed APK and an additional uncompressed stub APK
+     * (containing only android manifest) for the system image.
+     */
+    SYSTEM_COMPRESSED,
+    /** PERSISTENT mode only generates non-instant APKs (i.e. splits and standalone APKs). */
+    PERSISTENT,
+    /**
+     * INSTANT mode only generates instant APKs, assuming at least one module is instant-enabled.
+     */
+    INSTANT;
+
+    public final String getLowerCaseName() {
+      return Ascii.toLowerCase(name());
+    }
+
+    public final boolean isAnySystemMode() {
+      return equals(SYSTEM) || equals(SYSTEM_COMPRESSED);
+    }
+  }
+
+  /** Builder for the {@link BuildApksCommand}. */
+  @AutoValue.Builder
+  public abstract static class Builder {
+    /** Sets the path to the bundle. Must have the extension ".aab". */
+    public abstract Builder setBundlePath(Path bundlePath);
+
+    /** Sets the path to where the APK Set must be generated. Must have the extension ".apks". */
+    public abstract Builder setOutputFile(Path outputFile);
+
+    /**
+     * Sets whether to overwrite the contents of the output file.
+     *
+     * <p>The default is {@code false}. If set to {@code false} and the output file is present,
+     * exception is thrown.
+     */
+    public abstract Builder setOverwriteOutput(boolean overwriteOutput);
+
+    /** List of config dimensions to split the APKs by. */
+    @Deprecated // Use setBundleConfig() instead.
+    public abstract Builder setOptimizationDimensions(
+        ImmutableSet<OptimizationDimension> optimizationDimensions);
+
+    /**
+     * Sets against which mode APK should be generated.
+     *
+     * <p>By default we generate split, standalone ans instant APKs.
+     */
+    public abstract Builder setApkBuildMode(ApkBuildMode mode);
+
+    /**
+     * Sets whether the APKs should be built in local testing mode.
+     *
+     * <p>The default is {@code false}.
+     */
+    public abstract Builder setLocalTestingMode(boolean enableLocalTesting);
+
+    /**
+     * Sets if the generated APK Set will contain APKs compatible only with the connected device.
+     */
+    public abstract Builder setGenerateOnlyForConnectedDevice(boolean onlyForConnectedDevice);
+
+    public abstract Builder setModules(ImmutableSet<String> modules);
+
+    /** Sets the {@link DeviceSpec} for which the only the matching APKs will be generated. */
+    public abstract Builder setDeviceSpec(DeviceSpec deviceSpec);
+
+    /** Sets the {@link DeviceSpec} for which the only the matching APKs will be generated. */
+    public Builder setDeviceSpec(Path deviceSpecFile) {
+      // Parse as partial and fully validate later.
+      return setDeviceSpec(DeviceSpecParser.parsePartialDeviceSpec(deviceSpecFile));
+    }
+
+    /**
+     * Sets the device serial number. Required if more than one device including emulators is
+     * connected.
+     */
+    public abstract Builder setDeviceId(String deviceId);
+
+    /** Path to the ADB binary. Required if ANDROID_HOME environment variable is not set. */
+    public abstract Builder setAdbPath(Path adbPath);
+
+    /** The caller is responsible for the lifecycle of the {@link AdbServer}. */
+    public abstract Builder setAdbServer(AdbServer adbServer);
+
+    /** Provides a wrapper around the execution of the aapt2 command. */
+    public abstract Builder setAapt2Command(Aapt2Command aapt2Command);
+
+    /**
+     * Sets the signing configuration for the generated APKs.
+     *
+     * <p>Optional. If not set, the generated APKs will not be signed.
+     */
+    public abstract Builder setSigningConfiguration(SigningConfiguration signingConfiguration);
+
+    /**
+     * Allows to set an executor service for parallelization.
+     *
+     * <p>Optional. The caller is responsible for providing a service that accepts new tasks, and
+     * for shutting it down afterwards.
+     */
+    public Builder setExecutorService(ListeningExecutorService executorService) {
+      setExecutorServiceInternal(executorService);
+      setExecutorServiceCreatedByBundleTool(false);
+      return this;
+    }
+
+    abstract Optional<ListeningExecutorService> getExecutorServiceInternal();
+
+    abstract Builder setExecutorServiceInternal(ListeningExecutorService executorService);
+
+    /**
+     * Sets whether the ExecutorService has been created by bundletool, otherwise provided by the
+     * client.
+     *
+     * <p>If true, the ExecutorService is shut down at the end of execution of this command.
+     */
+    abstract Builder setExecutorServiceCreatedByBundleTool(boolean value);
+
+    /**
+     * If false will extract the APK set to the output directory without creating the final archive.
+     * Important: if this mode is used, the caller should still provide a "apks file" as the output
+     * file parameter. This is because there is a lots of validation here that assumes that. The
+     * command will return the directory where the APK files were copied to.
+     */
+    public abstract Builder setCreateApkSetArchive(boolean value);
+
+
+    /**
+     * Provides an {@link ApkListener} that will be notified at defined stages of APK creation.
+     *
+     * <p>The {@link ApkListener} must be thread-safe.
+     */
+    public abstract Builder setApkListener(ApkListener apkListener);
+
+    /**
+     * Provides an {@link ApkModifier} that will be invoked just before the APKs are finalized,
+     * serialized on disk and signed.
+     *
+     * <p>The {@link ApkModifier} must be thread-safe as it may in the future be invoked
+     * concurrently for the different APKs.
+     */
+    public abstract Builder setApkModifier(ApkModifier apkModifier);
+
+    /** Provides additional {@link SubValidator}s that will be invoked during validation. */
+    public abstract Builder setExtraValidators(ImmutableList<SubValidator> extraValidators);
+
+    /**
+     * Provides the lowest variant number to use.
+     *
+     * <p>By default, variants are numbered from 0 to {@code variantNum - 1}. By setting a value
+     * here, the variants will be numbered from {@code lowestVariantNumber} and up.
+     */
+    public abstract Builder setFirstVariantNumber(int firstVariantNumber);
+
+    /** For command line, sets the {@link PrintStream} to use for outputting the warnings. */
+    public abstract Builder setOutputPrintStream(PrintStream outputPrintStream);
+
+
+    abstract BuildApksCommand autoBuild();
+
+    public BuildApksCommand build() {
+      if (!getExecutorServiceInternal().isPresent()) {
+        setExecutorServiceInternal(createInternalExecutorService(DEFAULT_THREAD_POOL_SIZE));
+        setExecutorServiceCreatedByBundleTool(true);
+      }
+
+      BuildApksCommand command = autoBuild();
+      if (!command.getOptimizationDimensions().isEmpty()
+          && !command.getApkBuildMode().equals(DEFAULT)) {
+        throw new ValidationException(
+            String.format(
+                "Optimization dimension can be only set when running with '%s' mode flag.",
+                DEFAULT.getLowerCaseName()));
+      }
+
+      if (command.getGenerateOnlyForConnectedDevice()
+          && !command.getApkBuildMode().equals(DEFAULT)) {
+        throw new ValidationException(
+            String.format(
+                "Optimizing for connected device only possible when running with '%s' mode flag.",
+                DEFAULT.getLowerCaseName()));
+      }
+
+      if (command.getDeviceSpec().isPresent()) {
+        boolean supportsPartialDeviceSpecs = command.getApkBuildMode().isAnySystemMode();
+        DeviceSpecParser.validateDeviceSpec(
+            command.getDeviceSpec().get(), /* canSkipFields= */ supportsPartialDeviceSpecs);
+
+        switch (command.getApkBuildMode()) {
+          case UNIVERSAL:
+            throw new ValidationException(
+                String.format(
+                    "Optimizing for device spec not possible when running with '%s' mode flag.",
+                    UNIVERSAL.getLowerCaseName()));
+          case SYSTEM:
+          case SYSTEM_COMPRESSED:
+            DeviceSpec deviceSpec = command.getDeviceSpec().get();
+            if (deviceSpec.getScreenDensity() == 0 || deviceSpec.getSupportedAbisList().isEmpty()) {
+              throw new ValidationException(
+                  String.format(
+                      "Device spec must have screen density and ABIs set when running with "
+                          + "'%s' or '%s' mode flag. ",
+                      SYSTEM.getLowerCaseName(), SYSTEM_COMPRESSED.getLowerCaseName()));
+            }
+            break;
+          case DEFAULT:
+          case INSTANT:
+          case PERSISTENT:
+        }
+      } else {
+        if (command.getApkBuildMode().isAnySystemMode()) {
+          throw ValidationException.builder()
+              .withMessage(
+                  "Device spec must always be set when running with '%s' or '%s' mode flag.",
+                  SYSTEM.getLowerCaseName(), SYSTEM_COMPRESSED.getLowerCaseName())
+              .build();
+        }
+      }
+
+      if (command.getGenerateOnlyForConnectedDevice() && command.getDeviceSpec().isPresent()) {
+        throw new ValidationException(
+            "Cannot optimize for the device spec and connected device at the same time.");
+      }
+
+      if (command.getDeviceId().isPresent() && !command.getGenerateOnlyForConnectedDevice()) {
+        throw new ValidationException(
+            "Setting --device-id requires using the --connected-device flag.");
+      }
+
+      if (command.getCreateApkSetArchive()) {
+        if (!APK_SET_ARCHIVE_EXTENSION.equals(
+            MoreFiles.getFileExtension(command.getOutputFile()))) {
+          throw ValidationException.builder()
+              .withMessage(
+                  "Flag --output should be the path where to generate the APK Set. "
+                      + "Its extension must be '.apks'.")
+              .build();
+        }
+      }
+
+      if (!command.getModules().isEmpty()
+          && !command.getApkBuildMode().isAnySystemMode()
+          && !command.getApkBuildMode().equals(UNIVERSAL)) {
+        throw ValidationException.builder()
+            .withMessage(
+                "Modules can be only set when running with '%s', '%s' or '%s' mode flag.",
+                UNIVERSAL.getLowerCaseName(),
+                SYSTEM.getLowerCaseName(),
+                SYSTEM_COMPRESSED.getLowerCaseName())
+            .build();
+      }
+      return command;
+    }
   }
 }

@@ -73,8 +73,7 @@ public class BundleSharder {
       Version bundleVersion,
       BundleSharderConfiguration bundleSharderConfiguration) {
     this.bundleVersion = bundleVersion;
-//    this.merger = new ModuleSplitsToShardMerger(new D8DexMerger(), globalTempDir);
-    this.merger = new ModuleSplitsToShardMerger(new DxDexMerger(), globalTempDir);
+    this.merger = new ModuleSplitsToShardMerger(new D8DexMerger(), globalTempDir);
     this.bundleSharderConfiguration = bundleSharderConfiguration;
   }
 

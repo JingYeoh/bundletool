@@ -87,7 +87,8 @@ public final class BundleToolMainTest {
         "build-apks",
         "--bundle=" + aabPath,
         "--output=/Users/yangjing/Desktop/app.apks",
-        "--mode=universal"
+        "--mode=universal",
+        "--dex-max-ids=55000"
     }, mockRuntime);
   }
 }

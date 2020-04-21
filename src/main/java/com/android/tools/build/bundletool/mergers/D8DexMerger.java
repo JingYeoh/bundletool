@@ -16,9 +16,6 @@
 
 package com.android.tools.build.bundletool.mergers;
 
-import static com.android.tools.build.bundletool.model.utils.files.FilePreconditions.checkDirectoryExistsAndEmpty;
-import static com.google.common.collect.ImmutableList.toImmutableList;
-
 import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
 import com.android.tools.build.bundletool.model.utils.ThrowableUtils;
 import com.android.tools.build.bundletool.model.utils.files.FilePreconditions;
@@ -27,17 +24,43 @@ import com.android.tools.r8.CompilationMode;
 import com.android.tools.r8.D8;
 import com.android.tools.r8.D8Command;
 import com.android.tools.r8.OutputMode;
+import com.android.tools.r8.dex.VirtualFile;
 import com.google.common.collect.ImmutableList;
+
 import java.io.File;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Optional;
 
+import static com.android.tools.build.bundletool.model.utils.files.FilePreconditions.checkDirectoryExistsAndEmpty;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+
 /** Merges dex files using D8. */
 public class D8DexMerger implements DexMerger {
-
   private static final String DEX_OVERFLOW_MSG =
       "Cannot fit requested classes in a single dex file";
+  public static int maxIds = 65535;
+
+  private static void validateInput(ImmutableList<Path> dexFiles, Path outputDir) {
+    checkDirectoryExistsAndEmpty(outputDir);
+    dexFiles.forEach(FilePreconditions::checkFileExistsAndReadable);
+  }
+
+  private static CommandExecutionException translateD8Exception(
+      CompilationFailedException d8Exception) {
+    // DexOverflowException is thrown when the merged result doesn't fit into a single dex file and
+    // `mainDexClasses` is empty. Detection of the exception in the stacktrace is non-trivial and at
+    // the time of writing this code it is suppressed exception of the root cause.
+    if (ThrowableUtils.anyInCausalChainOrSuppressedMatches(
+        d8Exception, t -> t.getMessage() != null && t.getMessage().contains(DEX_OVERFLOW_MSG))) {
+      return new CommandExecutionException(
+          "Dex merging failed because the result does not fit into a single dex file and"
+              + " multidex is not supported by the input.",
+          d8Exception);
+    } else {
+      return new CommandExecutionException("Dex merging failed.", d8Exception);
+    }
+  }
 
   @Override
   public ImmutableList<Path> merge(
@@ -65,6 +88,7 @@ public class D8DexMerger implements DexMerger {
               .setMode(isDebuggable ? CompilationMode.DEBUG : CompilationMode.RELEASE);
       mainDexListFile.ifPresent(command::addMainDexListFiles);
 
+      VirtualFile.maxIds = maxIds;
       // D8 throws when main dex list is not provided and the merge result doesn't fit into a single
       // dex file.
       D8.run(command.build());
@@ -75,27 +99,6 @@ public class D8DexMerger implements DexMerger {
 
     } catch (CompilationFailedException e) {
       throw translateD8Exception(e);
-    }
-  }
-
-  private static void validateInput(ImmutableList<Path> dexFiles, Path outputDir) {
-    checkDirectoryExistsAndEmpty(outputDir);
-    dexFiles.forEach(FilePreconditions::checkFileExistsAndReadable);
-  }
-
-  private static CommandExecutionException translateD8Exception(
-      CompilationFailedException d8Exception) {
-    // DexOverflowException is thrown when the merged result doesn't fit into a single dex file and
-    // `mainDexClasses` is empty. Detection of the exception in the stacktrace is non-trivial and at
-    // the time of writing this code it is suppressed exception of the root cause.
-    if (ThrowableUtils.anyInCausalChainOrSuppressedMatches(
-        d8Exception, t -> t.getMessage() != null && t.getMessage().contains(DEX_OVERFLOW_MSG))) {
-      return new CommandExecutionException(
-          "Dex merging failed because the result does not fit into a single dex file and"
-              + " multidex is not supported by the input.",
-          d8Exception);
-    } else {
-      return new CommandExecutionException("Dex merging failed.", d8Exception);
     }
   }
 }
